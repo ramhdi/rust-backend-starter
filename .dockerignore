@@ -1,0 +1,55 @@
+# Version control
+
+.git
+.gitignore
+.github
+
+# Rust build artifacts
+
+/target/ \*_/_.rs.bk
+\*.pdb
+
+# Environment files
+
+.env
+.env.\*
+!.env.example
+
+# Editor files
+
+.idea/
+.vscode/
+_.swp
+_.swo
+.DS_Store
+
+# Documentation
+
+README.md
+CHANGELOG.md
+LICENSE
+docs/
+
+# Docker files (to prevent recursive copying)
+
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Test files
+
+tests/
+_\_test.rs
+_\_tests.rs
+
+# Debug files
+
+\*.log
+debug/
+
+# Other unnecessary files
+
+\*.md
+!README.md
+temp/
+tmp/

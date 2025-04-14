@@ -1,0 +1,47 @@
+# Experimental: use with caution!
+FROM rust:1.83-slim as builder
+
+WORKDIR /app
+
+# Install only the necessary build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends pkg-config libssl-dev libpq-dev musl-tools && \
+    rm -rf /var/lib/apt/lists/*
+
+# Add MUSL target for static linking
+RUN rustup target add x86_64-unknown-linux-musl
+
+# Create a dummy project to cache dependencies
+RUN USER=root cargo new --bin dummy
+WORKDIR /app/dummy
+COPY Cargo.toml ./
+RUN cargo build --release --target x86_64-unknown-linux-musl && \
+    rm -rf src/ target/x86_64-unknown-linux-musl/release/deps/rust_backend_starter* target/x86_64-unknown-linux-musl/release/rust_backend_starter*
+
+# Build the actual application
+WORKDIR /app
+COPY . .
+# Copy the cached dependencies
+RUN cp -r /app/dummy/target ./
+
+# Build with MUSL for static linking
+RUN cargo build --release --target x86_64-unknown-linux-musl
+
+# Use minimal distroless base image (no C/C++ runtime)
+FROM gcr.io/distroless/static-debian12
+
+# Copy only the binary and necessary files
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/rust-backend-starter /usr/local/bin/app
+COPY --from=builder /app/migrations /app/migrations
+
+# Set the working directory
+WORKDIR /app
+
+# Run as non-root user
+USER nonroot
+
+# Expose the port
+EXPOSE 8080
+
+# Command to run the application
+CMD ["/usr/local/bin/app"]
