@@ -6,21 +6,23 @@ use axum::{
     middleware::Next,
 };
 use bcrypt::{hash, verify, DEFAULT_COST};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::entity::users;
+use crate::entity;
 use crate::error::{AppError, Result};
-use crate::repository::user_repository;
+use crate::repository;
 
 #[derive(Deserialize)]
 pub struct SignInData {
     pub email: String,
     pub password: String,
+    #[serde(default)]
+    pub device_info: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -29,6 +31,19 @@ pub struct SignUpData {
     pub password: String,
     pub username: String,
     pub full_name: String,
+}
+
+#[derive(Deserialize)]
+pub struct RefreshTokenRequest {
+    pub refresh_token: String,
+}
+
+#[derive(Serialize)]
+pub struct AuthTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: i64,
+    pub token_type: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -57,9 +72,14 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
     verify(password, hash).map_err(|e| AppError::Internal(e.to_string()))
 }
 
-pub fn encode_jwt(config: &Config, user: &users::Model) -> Result<String> {
+pub fn generate_refresh_token() -> String {
+    Uuid::new_v4().to_string()
+}
+
+pub fn encode_jwt(config: &Config, user: &entity::users::Model) -> Result<(String, DateTime<Utc>)> {
     let now = Utc::now();
-    let exp = (now + Duration::hours(config.jwt_expiration)).timestamp() as u64;
+    let expiry_time = now + Duration::minutes(config.jwt_expiration);
+    let exp = expiry_time.timestamp() as u64;
     let iat = now.timestamp() as u64;
 
     let claim = Claims {
@@ -71,12 +91,14 @@ pub fn encode_jwt(config: &Config, user: &users::Model) -> Result<String> {
         full_name: user.full_name.clone(),
     };
 
-    encode(
+    let token = encode(
         &Header::default(),
         &claim,
         &EncodingKey::from_secret(config.jwt_secret.as_bytes()),
     )
-    .map_err(|_| AppError::Internal("Failed to encode JWT".to_string()))
+    .map_err(|_| AppError::Internal("Failed to encode JWT".to_string()))?;
+
+    Ok((token, expiry_time))
 }
 
 pub fn decode_jwt(config: &Config, jwt: &str) -> Result<TokenData<Claims>> {
@@ -89,7 +111,6 @@ pub fn decode_jwt(config: &Config, jwt: &str) -> Result<TokenData<Claims>> {
 }
 
 pub async fn authorize(mut req: Request, next: Next) -> Result<Response<Body>> {
-    // Extract the config from the request extensions
     let config = req
         .extensions()
         .get::<Config>()
@@ -101,15 +122,12 @@ pub async fn authorize(mut req: Request, next: Next) -> Result<Response<Body>> {
         .get(http::header::AUTHORIZATION)
         .ok_or_else(|| AppError::Auth("Missing authorization header".to_string()))?
         .to_str()
-        .map_err(|_| AppError::Auth("Invalid authorization header".to_string()))?;
-
-    let token = token
+        .map_err(|_| AppError::Auth("Invalid authorization header".to_string()))?
         .strip_prefix("Bearer ")
         .ok_or_else(|| AppError::Auth("Invalid token format".to_string()))?;
 
     let claims = decode_jwt(&config, token)?;
 
-    // Check if token is expired
     let now = Utc::now().timestamp() as u64;
     if claims.claims.exp < now {
         return Err(AppError::Auth("Token expired".to_string()));
@@ -134,8 +152,8 @@ pub async fn sign_in(
     Extension(config): Extension<Config>,
     Extension(db): Extension<sea_orm::DatabaseConnection>,
     Json(data): Json<SignInData>,
-) -> Result<Json<String>> {
-    let user = user_repository::find_user_by_email(&db, &data.email)
+) -> Result<Json<AuthTokens>> {
+    let user = repository::user::find_user_by_email(&db, &data.email)
         .await?
         .ok_or_else(|| AppError::Auth("Invalid email or password".to_string()))?;
 
@@ -143,16 +161,33 @@ pub async fn sign_in(
         return Err(AppError::Auth("Invalid email or password".to_string()));
     }
 
-    let token = encode_jwt(&config, &user)?;
-    Ok(Json(token))
+    let (access_token, expiry) = encode_jwt(&config, &user)?;
+    let expires_in = (expiry - Utc::now()).num_seconds();
+    let refresh_token = generate_refresh_token();
+    let refresh_expires_at = Utc::now() + Duration::days(30);
+
+    repository::refresh_token::create_refresh_token(
+        &db,
+        user.id,
+        &refresh_token,
+        refresh_expires_at,
+        data.device_info,
+    )
+    .await?;
+
+    Ok(Json(AuthTokens {
+        access_token,
+        refresh_token,
+        expires_in,
+        token_type: "Bearer".to_string(),
+    }))
 }
 
 pub async fn sign_up(
     Extension(db): Extension<sea_orm::DatabaseConnection>,
     Json(data): Json<SignUpData>,
 ) -> Result<Json<serde_json::Value>> {
-    // Check if user already exists
-    if user_repository::find_user_by_email(&db, &data.email)
+    if repository::user::find_user_by_email(&db, &data.email)
         .await?
         .is_some()
     {
@@ -161,7 +196,7 @@ pub async fn sign_up(
 
     let password_hash = hash_password(&data.password)?;
 
-    let user = user_repository::create_user(
+    let user = repository::user::create_user(
         &db,
         data.username,
         data.email,
@@ -175,5 +210,72 @@ pub async fn sign_up(
         "username": user.username,
         "email": user.email,
         "created_at": user.created_at
+    })))
+}
+
+pub async fn refresh_token(
+    Extension(config): Extension<Config>,
+    Extension(db): Extension<sea_orm::DatabaseConnection>,
+    Json(data): Json<RefreshTokenRequest>,
+) -> Result<Json<AuthTokens>> {
+    let stored_token = repository::refresh_token::find_by_token(&db, &data.refresh_token)
+        .await?
+        .ok_or_else(|| AppError::Auth("Invalid refresh token".to_string()))?;
+
+    let now: DateTime<Utc> = stored_token.expires_at.into();
+    if now < Utc::now() || stored_token.revoked {
+        repository::refresh_token::revoke_token(&db, &data.refresh_token).await?;
+        return Err(AppError::Auth(
+            "Refresh token expired or revoked".to_string(),
+        ));
+    }
+
+    let user = repository::user::find_user_by_id(&db, stored_token.user_id)
+        .await?
+        .ok_or_else(|| AppError::Auth("User not found".to_string()))?;
+
+    let (access_token, expiry) = encode_jwt(&config, &user)?;
+    let expires_in = (expiry - Utc::now()).num_seconds();
+    let new_refresh_token = generate_refresh_token();
+    let refresh_expires_at = Utc::now() + Duration::days(30);
+
+    repository::refresh_token::revoke_token(&db, &data.refresh_token).await?;
+
+    repository::refresh_token::create_refresh_token(
+        &db,
+        user.id,
+        &new_refresh_token,
+        refresh_expires_at,
+        stored_token.device_info,
+    )
+    .await?;
+
+    Ok(Json(AuthTokens {
+        access_token,
+        refresh_token: new_refresh_token,
+        expires_in,
+        token_type: "Bearer".to_string(),
+    }))
+}
+
+pub async fn signout(
+    Extension(db): Extension<sea_orm::DatabaseConnection>,
+    Json(data): Json<RefreshTokenRequest>,
+) -> Result<Json<serde_json::Value>> {
+    repository::refresh_token::revoke_token(&db, &data.refresh_token).await?;
+
+    Ok(Json(json!({
+        "message": "Successfully signed out"
+    })))
+}
+
+pub async fn signout_all(
+    Extension(db): Extension<sea_orm::DatabaseConnection>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> Result<Json<serde_json::Value>> {
+    repository::refresh_token::revoke_all_user_tokens(&db, current_user.user_id).await?;
+
+    Ok(Json(json!({
+        "message": "Successfully signed out from all devices"
     })))
 }

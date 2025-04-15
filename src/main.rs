@@ -13,58 +13,67 @@ mod services;
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
+    // Logging
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    // Load configuration
-    let config = config::Config::from_env();
+    // Config
+    let config = config::Config::from_env().expect("Failed loading environment variable");
     info!("Configuration loaded:");
     info!("  Database URL: {}", config.database_url);
     info!("  Server Address: {}", config.server_addr);
     info!("  JWT Expiration: {} hours", config.jwt_expiration);
 
-    // Connect to database
+    // Connect to db
     info!("Connecting to database...");
     let db = Database::connect(&config.database_url)
         .await
         .expect("Failed to connect to database");
+
     info!("Database connection established");
 
-    // Create router with config and db
+    // Configure router
     let app = routes::create_router(config.clone(), db.clone());
-
-    // Start server
     let listener = TcpListener::bind(&config.server_addr)
         .await
         .expect("Failed to bind server");
 
     info!("Server listening on {}", config.server_addr);
 
-    // Spawn a task to listen for shutdown signals
     let shutdown_signal = async {
-        tokio::select! {
-            _ = signal::ctrl_c() => {
-                info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
-            },
-            // _ = signal::unix::signal(signal::unix::SignalKind::terminate()) => {
-            //     info!("Received SIGTERM, initiating graceful shutdown...");
-            // },
+        #[cfg(unix)]
+        {
+            let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+                .expect("Failed to setup SIGTERM handler");
+            tokio::select! {
+                _ = signal::ctrl_c() => {
+                    info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
+                },
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM, initiating graceful shutdown...");
+                },
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
+            info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
         }
     };
 
-    // Serve the app with graceful shutdown
-    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal);
+    // Serve
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await
+        .expect("Server error");
 
-    if let Err(err) = server.await {
-        eprintln!("Server error: {}", err);
-    }
-
-    // Close the database connection after shutdown
+    // Resource cleanup
     info!("Closing database connection...");
     db.close()
         .await
         .expect("Failed to close database connection");
+
     info!("Database connection closed. Exiting...");
 }

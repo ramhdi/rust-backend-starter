@@ -1,41 +1,50 @@
 use dotenvy::dotenv;
-use std::env;
+use std::env::{self};
 use tracing::info;
+
+use crate::error::AppError;
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub database_url: String,
     pub jwt_secret: String,
-    pub jwt_expiration: i64, // in hours
+    pub jwt_expiration: i64, // hours
     pub server_addr: String,
 }
 
 impl Config {
-    pub fn from_env() -> Self {
-        // Load .env file if it exists
+    pub fn from_env() -> Result<Self, AppError> {
         match dotenv() {
             Ok(_) => info!("Loaded environment from .env file"),
             Err(_) => info!("No .env file found, using environment variables"),
         }
 
-        let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://postgres:postgres@localhost:5432/myapp?currentSchema=public".to_string()
-        });
+        let server_addr = env::var("SERVER_ADDR").map_err(|_| {
+            AppError::Environment("SERVER_ADDR not found in environment".to_string())
+        })?;
 
-        let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
+        let database_url = env::var("DATABASE_URL").map_err(|_| {
+            AppError::Environment("DATABASE_URL not found in environment".to_string())
+        })?;
+
+        let jwt_secret = env::var("JWT_SECRET").map_err(|_| {
+            AppError::Environment("JWT_SECRET not found in environment".to_string())
+        })?;
 
         let jwt_expiration = env::var("JWT_EXPIRATION")
-            .unwrap_or_else(|_| "24".to_string())
+            .map_err(|_| {
+                AppError::Environment("JWT_EXPIRATION not found in environment".to_string())
+            })?
             .parse()
-            .unwrap_or(24);
+            .map_err(|_| {
+                AppError::Environment("Failed parsing JWT_EXPIRATION to i64".to_string())
+            })?;
 
-        let server_addr = env::var("SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
-
-        Self {
+        Ok(Self {
             database_url,
             jwt_secret,
             jwt_expiration,
             server_addr,
-        }
+        })
     }
 }
