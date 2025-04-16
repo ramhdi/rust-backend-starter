@@ -1,22 +1,17 @@
-use axum::{
-    body::Body,
-    extract::{Extension, Json, Request},
-    http,
-    http::Response,
-    middleware::Next,
-};
+use axum::extract::{Extension, Json};
 use bcrypt::DEFAULT_COST;
 use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 use uuid::Uuid;
 
+use crate::config::Config;
 use crate::entity;
 use crate::error::{AppError, Result};
 use crate::repository;
-use crate::{config::Config, rbac::Role};
 
 #[derive(Deserialize)]
 pub struct SignInData {
@@ -112,45 +107,6 @@ pub fn decode_jwt(config: &Config, jwt: &str) -> Result<TokenData<Claims>> {
         &Validation::default(),
     )
     .map_err(|_| AppError::Auth("Invalid token".to_string()))
-}
-
-pub async fn authorize(mut req: Request, next: Next) -> Result<Response<Body>> {
-    let config = req
-        .extensions()
-        .get::<Config>()
-        .ok_or_else(|| AppError::Internal("Configuration not found".to_string()))?
-        .clone();
-
-    let token = req
-        .headers()
-        .get(http::header::AUTHORIZATION)
-        .ok_or_else(|| AppError::Auth("Missing authorization header".to_string()))?
-        .to_str()
-        .map_err(|_| AppError::Auth("Invalid authorization header".to_string()))?
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| AppError::Auth("Invalid token format".to_string()))?;
-
-    let claims = decode_jwt(&config, token)?;
-
-    let now = Utc::now().timestamp() as u64;
-    if claims.claims.exp < now {
-        return Err(AppError::Auth("Token expired".to_string()));
-    }
-
-    let user_id = Uuid::parse_str(&claims.claims.user_id)
-        .map_err(|_| AppError::Auth("Invalid user ID in token".to_string()))?;
-
-    let current_user = CurrentUser {
-        user_id,
-        email: claims.claims.email,
-        username: claims.claims.username,
-        full_name: claims.claims.full_name,
-        role: claims.claims.role,
-    };
-
-    req.extensions_mut().insert(current_user);
-
-    Ok(next.run(req).await)
 }
 
 pub async fn sign_in(
@@ -284,4 +240,37 @@ pub async fn signout_all(
     Ok(Json(serde_json::json!({
         "message": "Successfully signed out from all devices"
     })))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Role {
+    User,
+    Admin,
+}
+
+impl Role {
+    pub fn from_str(role: &str) -> Option<Self> {
+        match role.to_lowercase().as_str() {
+            "user" => Some(Role::User),
+            "admin" => Some(Role::Admin),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Role::User => "user",
+            Role::Admin => "admin",
+        }
+    }
+
+    pub fn is_admin(&self) -> bool {
+        matches!(self, Role::Admin)
+    }
+}
+
+impl fmt::Display for Role {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }

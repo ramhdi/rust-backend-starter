@@ -8,7 +8,7 @@ mod auth;
 mod config;
 mod entity;
 mod error;
-mod rbac;
+mod middleware;
 mod repository;
 mod routes;
 mod services;

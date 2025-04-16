@@ -2,7 +2,7 @@ use crate::entity::{self, users};
 use crate::error::{AppError, Result};
 use chrono::Utc;
 use entity::prelude::*;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use uuid::Uuid;
 
 pub async fn find_user_by_email(
@@ -36,14 +36,14 @@ pub async fn create_user_with_role(
     let now = Utc::now();
 
     let user = users::ActiveModel {
-        id: Set(uuid),
-        username: Set(username),
-        email: Set(email),
-        password_hash: Set(password_hash),
-        full_name: Set(full_name),
-        role: Set(role),
-        created_at: Set(Some(now.into())),
-        updated_at: Set(Some(now.into())),
+        id: sea_orm::Set(uuid),
+        username: sea_orm::Set(username),
+        email: sea_orm::Set(email),
+        password_hash: sea_orm::Set(password_hash),
+        full_name: sea_orm::Set(full_name),
+        role: sea_orm::Set(role),
+        created_at: sea_orm::Set(Some(now.into())),
+        updated_at: sea_orm::Set(Some(now.into())),
     };
 
     user.insert(db).await.map_err(AppError::from)
@@ -61,7 +61,7 @@ pub async fn update_user_role(
         .ok_or_else(|| AppError::NotFound(format!("User with ID {} not found", user_id)))?;
 
     let mut user_model: users::ActiveModel = user.into();
-    user_model.role = Set(role);
+    user_model.role = sea_orm::Set(role);
     let updated_user = user_model.update(db).await.map_err(AppError::from)?;
 
     Ok(updated_user)

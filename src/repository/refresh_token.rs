@@ -3,7 +3,7 @@ use crate::error::{AppError, Result};
 use chrono::{DateTime, Utc};
 use entity::prelude::*;
 use sea_orm::prelude::DateTimeWithTimeZone;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use uuid::Uuid;
 
 pub async fn find_by_token(
@@ -39,14 +39,14 @@ pub async fn create_refresh_token(
     let now_dt: DateTimeWithTimeZone = Utc::now().into();
 
     let refresh_token = refresh_tokens::ActiveModel {
-        id: Set(Uuid::new_v4()),
-        user_id: Set(user_id),
-        token: Set(token.to_string()),
-        expires_at: Set(expires_dt),
-        created_at: Set(now_dt),
-        revoked: Set(false),
-        revoked_at: Set(None),
-        device_info: Set(device_info),
+        id: sea_orm::Set(Uuid::new_v4()),
+        user_id: sea_orm::Set(user_id),
+        token: sea_orm::Set(token.to_string()),
+        expires_at: sea_orm::Set(expires_dt),
+        created_at: sea_orm::Set(now_dt),
+        revoked: sea_orm::Set(false),
+        revoked_at: sea_orm::Set(None),
+        device_info: sea_orm::Set(device_info),
     };
 
     refresh_token.insert(db).await.map_err(AppError::from)
@@ -61,10 +61,10 @@ pub async fn revoke_token(db: &DatabaseConnection, token: &str) -> Result<()> {
 
     if let Some(token_model) = token_entity {
         let mut token_am: refresh_tokens::ActiveModel = token_model.into();
-        token_am.revoked = Set(true);
+        token_am.revoked = sea_orm::Set(true);
 
         let now_dt: DateTimeWithTimeZone = Utc::now().into();
-        token_am.revoked_at = Set(Some(now_dt));
+        token_am.revoked_at = sea_orm::Set(Some(now_dt));
 
         token_am.update(db).await.map_err(AppError::from)?;
     }
@@ -84,8 +84,8 @@ pub async fn revoke_all_user_tokens(db: &DatabaseConnection, user_id: Uuid) -> R
 
     for token in tokens {
         let mut token_am: refresh_tokens::ActiveModel = token.into();
-        token_am.revoked = Set(true);
-        token_am.revoked_at = Set(Some(now_dt.clone()));
+        token_am.revoked = sea_orm::Set(true);
+        token_am.revoked_at = sea_orm::Set(Some(now_dt.clone()));
 
         token_am.update(db).await.map_err(AppError::from)?;
     }

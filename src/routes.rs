@@ -1,5 +1,4 @@
 use axum::{
-    middleware,
     routing::{delete, get, post, put},
     Extension, Router,
 };
@@ -9,7 +8,7 @@ use tracing::Level;
 
 use crate::auth;
 use crate::config::Config;
-use crate::rbac;
+use crate::middleware;
 use crate::services;
 
 #[derive(Clone)]
@@ -36,27 +35,21 @@ pub fn create_router(config: Config, db: DatabaseConnection) -> Router {
         .route("/users/profile", get(services::user::get_user_profile))
         .route("/auth/signout", post(auth::signout))
         .route("/auth/signout/all", post(auth::signout_all))
-        .layer(middleware::from_fn(rbac::require_user))
-        .layer(middleware::from_fn(auth::authorize));
+        .layer(axum::middleware::from_fn(middleware::require_user))
+        .layer(axum::middleware::from_fn(middleware::authorize));
 
     // Admin routes
     let admin_routes = Router::new()
-        .route("/admin/users", get(services::admin::get_all_users))
-        .route(
-            "/admin/users/:user_id",
-            get(services::admin::get_user_by_id),
-        )
+        .route("/admin/users", get(services::user::get_all_users))
+        .route("/admin/users/:user_id", get(services::user::get_user_by_id))
         .route(
             "/admin/users/:user_id/role",
-            put(services::admin::update_user_role),
+            put(services::user::update_user_role),
         )
-        .route(
-            "/admin/users/:user_id",
-            delete(services::admin::delete_user),
-        )
-        .route("/admin/users", post(services::admin::create_admin_user))
-        .layer(middleware::from_fn(rbac::require_admin))
-        .layer(middleware::from_fn(auth::authorize));
+        .route("/admin/users/:user_id", delete(services::user::delete_user))
+        .route("/admin/users", post(services::user::create_admin_user))
+        .layer(axum::middleware::from_fn(middleware::require_admin))
+        .layer(axum::middleware::from_fn(middleware::authorize));
 
     // Health check
     let health_route = Router::new().route("/healthz", get(health_check));

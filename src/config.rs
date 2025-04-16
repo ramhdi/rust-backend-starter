@@ -1,5 +1,4 @@
 use std::env::{self};
-use tracing::info;
 
 use crate::error::AppError;
 
@@ -15,8 +14,8 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self, AppError> {
         match dotenvy::dotenv() {
-            Ok(_) => info!("Loaded environment from .env file"),
-            Err(_) => info!("No .env file found, using environment variables"),
+            Ok(_) => tracing::info!("Loaded environment from .env file"),
+            Err(_) => tracing::info!("No .env file found, using environment variables"),
         }
 
         let server_addr = env::var("SERVER_ADDR").map_err(|_| {

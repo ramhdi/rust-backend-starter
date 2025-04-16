@@ -4,7 +4,7 @@ use axum::{
     Json,
 };
 use sea_orm::DbErr;
-use std::fmt;
+use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug)]
 pub enum AppError {
@@ -16,8 +16,8 @@ pub enum AppError {
     Internal(String),
 }
 
-impl fmt::Display for AppError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for AppError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Environment(e) => write!(f, "Environment error: {}", e),
             Self::Database(e) => write!(f, "Database error: {}", e),
