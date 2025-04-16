@@ -5,17 +5,18 @@ use axum::{
     http::Response,
     middleware::Next,
 };
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::DEFAULT_COST;
 use chrono::{DateTime, Duration, Utc};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
+use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::Value;
 use uuid::Uuid;
 
-use crate::config::Config;
 use crate::entity;
 use crate::error::{AppError, Result};
 use crate::repository;
+use crate::{config::Config, rbac::Role};
 
 #[derive(Deserialize)]
 pub struct SignInData {
@@ -54,6 +55,7 @@ pub struct Claims {
     pub email: String,
     pub username: String,
     pub full_name: String,
+    pub role: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -62,14 +64,15 @@ pub struct CurrentUser {
     pub email: String,
     pub username: String,
     pub full_name: String,
+    pub role: String,
 }
 
 pub fn hash_password(password: &str) -> Result<String> {
-    hash(password, DEFAULT_COST).map_err(|e| AppError::Internal(e.to_string()))
+    bcrypt::hash(password, DEFAULT_COST).map_err(|e| AppError::Internal(e.to_string()))
 }
 
 pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
-    verify(password, hash).map_err(|e| AppError::Internal(e.to_string()))
+    bcrypt::verify(password, hash).map_err(|e| AppError::Internal(e.to_string()))
 }
 
 pub fn generate_refresh_token() -> String {
@@ -89,9 +92,10 @@ pub fn encode_jwt(config: &Config, user: &entity::users::Model) -> Result<(Strin
         username: user.username.clone(),
         user_id: user.id.to_string(),
         full_name: user.full_name.clone(),
+        role: user.role.clone(),
     };
 
-    let token = encode(
+    let token = jsonwebtoken::encode(
         &Header::default(),
         &claim,
         &EncodingKey::from_secret(config.jwt_secret.as_bytes()),
@@ -102,7 +106,7 @@ pub fn encode_jwt(config: &Config, user: &entity::users::Model) -> Result<(Strin
 }
 
 pub fn decode_jwt(config: &Config, jwt: &str) -> Result<TokenData<Claims>> {
-    decode(
+    jsonwebtoken::decode(
         jwt,
         &DecodingKey::from_secret(config.jwt_secret.as_bytes()),
         &Validation::default(),
@@ -141,6 +145,7 @@ pub async fn authorize(mut req: Request, next: Next) -> Result<Response<Body>> {
         email: claims.claims.email,
         username: claims.claims.username,
         full_name: claims.claims.full_name,
+        role: claims.claims.role,
     };
 
     req.extensions_mut().insert(current_user);
@@ -150,7 +155,7 @@ pub async fn authorize(mut req: Request, next: Next) -> Result<Response<Body>> {
 
 pub async fn sign_in(
     Extension(config): Extension<Config>,
-    Extension(db): Extension<sea_orm::DatabaseConnection>,
+    Extension(db): Extension<DatabaseConnection>,
     Json(data): Json<SignInData>,
 ) -> Result<Json<AuthTokens>> {
     let user = repository::user::find_user_by_email(&db, &data.email)
@@ -184,9 +189,9 @@ pub async fn sign_in(
 }
 
 pub async fn sign_up(
-    Extension(db): Extension<sea_orm::DatabaseConnection>,
+    Extension(db): Extension<DatabaseConnection>,
     Json(data): Json<SignUpData>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<Value>> {
     if repository::user::find_user_by_email(&db, &data.email)
         .await?
         .is_some()
@@ -196,16 +201,17 @@ pub async fn sign_up(
 
     let password_hash = hash_password(&data.password)?;
 
-    let user = repository::user::create_user(
+    let user = repository::user::create_user_with_role(
         &db,
         data.username,
         data.email,
         password_hash,
         data.full_name,
+        Role::User.as_str().to_string(),
     )
     .await?;
 
-    Ok(Json(json!({
+    Ok(Json(serde_json::json!({
         "id": user.id.to_string(),
         "username": user.username,
         "email": user.email,
@@ -215,7 +221,7 @@ pub async fn sign_up(
 
 pub async fn refresh_token(
     Extension(config): Extension<Config>,
-    Extension(db): Extension<sea_orm::DatabaseConnection>,
+    Extension(db): Extension<DatabaseConnection>,
     Json(data): Json<RefreshTokenRequest>,
 ) -> Result<Json<AuthTokens>> {
     let stored_token = repository::refresh_token::find_by_token(&db, &data.refresh_token)
@@ -259,23 +265,23 @@ pub async fn refresh_token(
 }
 
 pub async fn signout(
-    Extension(db): Extension<sea_orm::DatabaseConnection>,
+    Extension(db): Extension<DatabaseConnection>,
     Json(data): Json<RefreshTokenRequest>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<Value>> {
     repository::refresh_token::revoke_token(&db, &data.refresh_token).await?;
 
-    Ok(Json(json!({
+    Ok(Json(serde_json::json!({
         "message": "Successfully signed out"
     })))
 }
 
 pub async fn signout_all(
-    Extension(db): Extension<sea_orm::DatabaseConnection>,
+    Extension(db): Extension<DatabaseConnection>,
     Extension(current_user): Extension<CurrentUser>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<Value>> {
     repository::refresh_token::revoke_all_user_tokens(&db, current_user.user_id).await?;
 
-    Ok(Json(json!({
+    Ok(Json(serde_json::json!({
         "message": "Successfully signed out from all devices"
     })))
 }

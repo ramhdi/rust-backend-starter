@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use sea_orm::DbErr;
-use serde_json::json;
 use std::fmt;
 
 #[derive(Debug)]
@@ -47,7 +46,7 @@ impl IntoResponse for AppError {
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
         };
 
-        let body = Json(json!({
+        let body = Json(serde_json::json!({
             "error": error_message,
         }));
 

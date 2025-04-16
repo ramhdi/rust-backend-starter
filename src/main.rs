@@ -1,12 +1,14 @@
-use sea_orm::Database;
+use std::time::Duration;
+
+use sea_orm::{ConnectOptions, Database};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::info;
 
 mod auth;
 mod config;
 mod entity;
 mod error;
+mod rbac;
 mod repository;
 mod routes;
 mod services;
@@ -20,18 +22,32 @@ async fn main() {
 
     // Config
     let config = config::Config::from_env().expect("Failed loading environment variable");
-    info!("Configuration loaded:");
-    info!("  Database URL: {}", config.database_url);
-    info!("  Server Address: {}", config.server_addr);
-    info!("  JWT Expiration: {} hours", config.jwt_expiration);
+    tracing::info!("Configuration loaded:");
+    tracing::info!("  Database URL: {}", config.database_url);
+    tracing::info!(
+        "  Database Connection timeout: {} seconds",
+        config.db_connect_timeout
+    );
+    tracing::info!("  Server Address: {}", config.server_addr);
+    tracing::info!("  JWT Expiration: {} minutes", config.jwt_expiration);
 
     // Connect to db
-    info!("Connecting to database...");
-    let db = Database::connect(&config.database_url)
+    tracing::info!(
+        "Connecting to database with timeout {}s...",
+        config.db_connect_timeout
+    );
+
+    let mut opt = ConnectOptions::new(config.database_url.clone());
+    opt.connect_timeout(Duration::from_secs(config.db_connect_timeout));
+    opt.max_connections(100);
+    opt.min_connections(5);
+    opt.sqlx_logging(false);
+
+    let db = Database::connect(opt)
         .await
         .expect("Failed to connect to database");
 
-    info!("Database connection established");
+    tracing::info!("Database connection established");
 
     // Configure router
     let app = routes::create_router(config.clone(), db.clone());
@@ -39,7 +55,7 @@ async fn main() {
         .await
         .expect("Failed to bind server");
 
-    info!("Server listening on {}", config.server_addr);
+    tracing::info!("Server listening on {}", config.server_addr);
 
     let shutdown_signal = async {
         #[cfg(unix)]
@@ -48,10 +64,10 @@ async fn main() {
                 .expect("Failed to setup SIGTERM handler");
             tokio::select! {
                 _ = signal::ctrl_c() => {
-                    info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
+                    tracing::info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
                 },
                 _ = sigterm.recv() => {
-                    info!("Received SIGTERM, initiating graceful shutdown...");
+                    tracing::info!("Received SIGTERM, initiating graceful shutdown...");
                 },
             }
         }
@@ -59,7 +75,7 @@ async fn main() {
         #[cfg(not(unix))]
         {
             signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
-            info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
+            tracing::info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
         }
     };
 
@@ -70,10 +86,10 @@ async fn main() {
         .expect("Server error");
 
     // Resource cleanup
-    info!("Closing database connection...");
+    tracing::info!("Closing database connection...");
     db.close()
         .await
         .expect("Failed to close database connection");
 
-    info!("Database connection closed. Exiting...");
+    tracing::info!("Database connection closed. Exiting...");
 }

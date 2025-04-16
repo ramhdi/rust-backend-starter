@@ -1,4 +1,3 @@
-use dotenvy::dotenv;
 use std::env::{self};
 use tracing::info;
 
@@ -8,13 +7,14 @@ use crate::error::AppError;
 pub struct Config {
     pub database_url: String,
     pub jwt_secret: String,
-    pub jwt_expiration: i64, // hours
+    pub jwt_expiration: i64, // minutes, use i64 for chrono
     pub server_addr: String,
+    pub db_connect_timeout: u64, // seconds, use u64 for std::time
 }
 
 impl Config {
     pub fn from_env() -> Result<Self, AppError> {
-        match dotenv() {
+        match dotenvy::dotenv() {
             Ok(_) => info!("Loaded environment from .env file"),
             Err(_) => info!("No .env file found, using environment variables"),
         }
@@ -40,11 +40,21 @@ impl Config {
                 AppError::Environment("Failed parsing JWT_EXPIRATION to i64".to_string())
             })?;
 
+        let db_connect_timeout = env::var("DB_CONNECT_TIMEOUT")
+            .map_err(|_| {
+                AppError::Environment("DB_CONNECT_TIMEOUT not found in environment".to_string())
+            })?
+            .parse()
+            .map_err(|_| {
+                AppError::Environment("Failed parsing DB_CONNECT_TIMEOUT to u64".to_string())
+            })?;
+
         Ok(Self {
             database_url,
             jwt_secret,
             jwt_expiration,
             server_addr,
+            db_connect_timeout,
         })
     }
 }

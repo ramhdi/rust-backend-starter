@@ -1,6 +1,6 @@
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Extension, Router,
 };
 use sea_orm::DatabaseConnection;
@@ -9,7 +9,8 @@ use tracing::Level;
 
 use crate::auth;
 use crate::config::Config;
-use crate::services::user;
+use crate::rbac;
+use crate::services;
 
 #[derive(Clone)]
 struct AppState {
@@ -29,12 +30,32 @@ pub fn create_router(config: Config, db: DatabaseConnection) -> Router {
         .route("/auth/signup", post(auth::sign_up))
         .route("/auth/refresh", post(auth::refresh_token));
 
-    // Protected routes
-    let protected_routes = Router::new()
-        .route("/users/me", get(user::get_current_user))
-        .route("/users/profile", get(user::get_user_profile))
+    // User routes
+    let user_routes = Router::new()
+        .route("/users/me", get(services::user::get_current_user))
+        .route("/users/profile", get(services::user::get_user_profile))
         .route("/auth/signout", post(auth::signout))
         .route("/auth/signout/all", post(auth::signout_all))
+        .layer(middleware::from_fn(rbac::require_user))
+        .layer(middleware::from_fn(auth::authorize));
+
+    // Admin routes
+    let admin_routes = Router::new()
+        .route("/admin/users", get(services::admin::get_all_users))
+        .route(
+            "/admin/users/:user_id",
+            get(services::admin::get_user_by_id),
+        )
+        .route(
+            "/admin/users/:user_id/role",
+            put(services::admin::update_user_role),
+        )
+        .route(
+            "/admin/users/:user_id",
+            delete(services::admin::delete_user),
+        )
+        .route("/admin/users", post(services::admin::create_admin_user))
+        .layer(middleware::from_fn(rbac::require_admin))
         .layer(middleware::from_fn(auth::authorize));
 
     // Health check
@@ -43,7 +64,10 @@ pub fn create_router(config: Config, db: DatabaseConnection) -> Router {
     Router::new()
         .nest(
             "/api",
-            Router::new().merge(public_routes).merge(protected_routes),
+            Router::new()
+                .merge(public_routes)
+                .merge(user_routes)
+                .merge(admin_routes),
         )
         .merge(health_route)
         .layer(

@@ -9,13 +9,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    env_file:
-      - .env
     environment:
       - DATABASE_URL=postgres://postgres:postgres@postgres:5432/myapp?currentSchema=public
+      - DB_CONNECT_TIMEOUT=30
       - SERVER_ADDR=0.0.0.0:8080
       - JWT_SECRET=secret
-      - JWT_EXPIRATION=24
+      - JWT_EXPIRATION=15
     restart: unless-stopped
 
   # Postgres database
