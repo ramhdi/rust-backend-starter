@@ -10,16 +10,11 @@ use crate::auth;
 use crate::config::Config;
 use crate::middleware;
 use crate::services;
-
-#[derive(Clone)]
-struct AppState {
-    db: DatabaseConnection,
-    config: Config,
-}
+use crate::state::AppState;
 
 pub fn create_router(config: Config, db: DatabaseConnection) -> Router {
     let app_state = AppState {
-        db: db.clone(),
+        db,
         config: config.clone(),
     };
 
@@ -69,7 +64,6 @@ pub fn create_router(config: Config, db: DatabaseConnection) -> Router {
                 .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
         )
         .layer(Extension(config))
-        .layer(Extension(db))
         .with_state(app_state)
 }
 

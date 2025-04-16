@@ -45,12 +45,8 @@ pub async fn authorize(mut req: Request, next: Next) -> Result<Response<Body>> {
     Ok(next.run(req).await)
 }
 
-pub async fn require_role(
-    role_required: Role,
-    request: Request,
-    next: Next,
-) -> Result<Response<Body>> {
-    let user = request
+pub async fn require_role(role_required: Role, req: Request, next: Next) -> Result<Response<Body>> {
+    let user = req
         .extensions()
         .get::<CurrentUser>()
         .ok_or_else(|| AppError::Auth("User not authenticated".to_string()))?;
@@ -59,11 +55,11 @@ pub async fn require_role(
         .ok_or_else(|| AppError::Auth(format!("Invalid role: {}", user.role)))?;
 
     if user_role.is_admin() {
-        return Ok(next.run(request).await);
+        return Ok(next.run(req).await);
     }
 
     if role_required == Role::User && user_role == Role::User {
-        return Ok(next.run(request).await);
+        return Ok(next.run(req).await);
     }
 
     Err(AppError::Auth(format!(
@@ -72,10 +68,10 @@ pub async fn require_role(
     )))
 }
 
-pub async fn require_admin(request: Request, next: Next) -> Result<Response<Body>> {
-    require_role(Role::Admin, request, next).await
+pub async fn require_admin(req: Request, next: Next) -> Result<Response<Body>> {
+    require_role(Role::Admin, req, next).await
 }
 
-pub async fn require_user(request: Request, next: Next) -> Result<Response<Body>> {
-    require_role(Role::User, request, next).await
+pub async fn require_user(req: Request, next: Next) -> Result<Response<Body>> {
+    require_role(Role::User, req, next).await
 }

@@ -1,8 +1,7 @@
-use axum::extract::{Extension, Json};
+use axum::extract::{Extension, Json, State};
 use bcrypt::DEFAULT_COST;
 use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
-use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
@@ -12,6 +11,7 @@ use crate::config::Config;
 use crate::entity;
 use crate::error::{AppError, Result};
 use crate::repository;
+use crate::state::AppState;
 
 #[derive(Deserialize)]
 pub struct SignInData {
@@ -106,15 +106,19 @@ pub fn decode_jwt(config: &Config, jwt: &str) -> Result<TokenData<Claims>> {
         &DecodingKey::from_secret(config.jwt_secret.as_bytes()),
         &Validation::default(),
     )
-    .map_err(|_| AppError::Auth("Invalid token".to_string()))
+    .map_err(|error| match error.kind() {
+        jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
+            AppError::Auth("Expired token".to_string())
+        }
+        _ => AppError::Auth("Invalid token".to_string()),
+    })
 }
 
 pub async fn sign_in(
-    Extension(config): Extension<Config>,
-    Extension(db): Extension<DatabaseConnection>,
+    State(state): State<AppState>,
     Json(data): Json<SignInData>,
 ) -> Result<Json<AuthTokens>> {
-    let user = repository::user::find_user_by_email(&db, &data.email)
+    let user = repository::user::find_user_by_email(&state.db, &data.email)
         .await?
         .ok_or_else(|| AppError::Auth("Invalid email or password".to_string()))?;
 
@@ -122,13 +126,13 @@ pub async fn sign_in(
         return Err(AppError::Auth("Invalid email or password".to_string()));
     }
 
-    let (access_token, expiry) = encode_jwt(&config, &user)?;
+    let (access_token, expiry) = encode_jwt(&state.config, &user)?;
     let expires_in = (expiry - Utc::now()).num_seconds();
     let refresh_token = generate_refresh_token();
     let refresh_expires_at = Utc::now() + Duration::days(30);
 
     repository::refresh_token::create_refresh_token(
-        &db,
+        &state.db,
         user.id,
         &refresh_token,
         refresh_expires_at,
@@ -145,10 +149,10 @@ pub async fn sign_in(
 }
 
 pub async fn sign_up(
-    Extension(db): Extension<DatabaseConnection>,
+    State(state): State<AppState>,
     Json(data): Json<SignUpData>,
 ) -> Result<Json<Value>> {
-    if repository::user::find_user_by_email(&db, &data.email)
+    if repository::user::find_user_by_email(&state.db, &data.email)
         .await?
         .is_some()
     {
@@ -158,12 +162,12 @@ pub async fn sign_up(
     let password_hash = hash_password(&data.password)?;
 
     let user = repository::user::create_user_with_role(
-        &db,
+        &state.db,
         data.username,
         data.email,
         password_hash,
         data.full_name,
-        Role::User.as_str().to_string(),
+        Role::User.to_string(),
     )
     .await?;
 
@@ -176,35 +180,34 @@ pub async fn sign_up(
 }
 
 pub async fn refresh_token(
-    Extension(config): Extension<Config>,
-    Extension(db): Extension<DatabaseConnection>,
+    State(state): State<AppState>,
     Json(data): Json<RefreshTokenRequest>,
 ) -> Result<Json<AuthTokens>> {
-    let stored_token = repository::refresh_token::find_by_token(&db, &data.refresh_token)
+    let stored_token = repository::refresh_token::find_by_token(&state.db, &data.refresh_token)
         .await?
         .ok_or_else(|| AppError::Auth("Invalid refresh token".to_string()))?;
 
     let now: DateTime<Utc> = stored_token.expires_at.into();
     if now < Utc::now() || stored_token.revoked {
-        repository::refresh_token::revoke_token(&db, &data.refresh_token).await?;
+        repository::refresh_token::revoke_token(&state.db, &data.refresh_token).await?;
         return Err(AppError::Auth(
             "Refresh token expired or revoked".to_string(),
         ));
     }
 
-    let user = repository::user::find_user_by_id(&db, stored_token.user_id)
+    let user = repository::user::find_user_by_id(&state.db, stored_token.user_id)
         .await?
         .ok_or_else(|| AppError::Auth("User not found".to_string()))?;
 
-    let (access_token, expiry) = encode_jwt(&config, &user)?;
+    let (access_token, expiry) = encode_jwt(&state.config, &user)?;
     let expires_in = (expiry - Utc::now()).num_seconds();
     let new_refresh_token = generate_refresh_token();
     let refresh_expires_at = Utc::now() + Duration::days(30);
 
-    repository::refresh_token::revoke_token(&db, &data.refresh_token).await?;
+    repository::refresh_token::revoke_token(&state.db, &data.refresh_token).await?;
 
     repository::refresh_token::create_refresh_token(
-        &db,
+        &state.db,
         user.id,
         &new_refresh_token,
         refresh_expires_at,
@@ -221,10 +224,10 @@ pub async fn refresh_token(
 }
 
 pub async fn signout(
-    Extension(db): Extension<DatabaseConnection>,
+    State(state): State<AppState>,
     Json(data): Json<RefreshTokenRequest>,
 ) -> Result<Json<Value>> {
-    repository::refresh_token::revoke_token(&db, &data.refresh_token).await?;
+    repository::refresh_token::revoke_token(&state.db, &data.refresh_token).await?;
 
     Ok(Json(serde_json::json!({
         "message": "Successfully signed out"
@@ -232,10 +235,10 @@ pub async fn signout(
 }
 
 pub async fn signout_all(
-    Extension(db): Extension<DatabaseConnection>,
+    State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> Result<Json<Value>> {
-    repository::refresh_token::revoke_all_user_tokens(&db, current_user.user_id).await?;
+    repository::refresh_token::revoke_all_user_tokens(&state.db, current_user.user_id).await?;
 
     Ok(Json(serde_json::json!({
         "message": "Successfully signed out from all devices"
@@ -261,6 +264,13 @@ impl Role {
         match self {
             Role::User => "user",
             Role::Admin => "admin",
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            Role::User => "user".to_string(),
+            Role::Admin => "admin".to_string(),
         }
     }
 
